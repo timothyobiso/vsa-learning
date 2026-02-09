@@ -12,7 +12,6 @@ from tqdm import tqdm
 
 from vsa.codebooks import SceneCodebooks
 from vsa.resonator import ResonatorNetwork
-from data.toy_scenes import ToySceneDataset
 from model.encoder import SceneEncoder
 
 
@@ -42,7 +41,7 @@ def collate_fn(batch):
 
 def evaluate_resonator(
     model: SceneEncoder,
-    dataset: ToySceneDataset,
+    dataset,
     codebooks: SceneCodebooks,
     resonator: ResonatorNetwork,
     device: torch.device,
@@ -54,6 +53,8 @@ def evaluate_resonator(
     total_objects = 0
     correct_properties = {name: 0 for name in codebooks.codebook_names()}
 
+    sentinel_pairs = codebooks.discrete_sentinel_indices()
+
     with torch.no_grad():
         for i in range(min(n_samples, len(dataset))):
             img, target, scene = dataset[i]
@@ -62,18 +63,20 @@ def evaluate_resonator(
             pred = model(img).squeeze(0).cpu()
 
             # Run resonator on predicted vector
-            results = resonator.factorize_scene(pred, max_objects=len(scene))
+            results = resonator.factorize_scene(
+                pred, max_objects=len(scene), sentinel_pairs=sentinel_pairs,
+            )
 
-            # Match predicted objects to ground-truth
+            # Build ground-truth indices for each object
             gt_indices = []
             for obj in scene:
-                gt_idx = [
-                    codebooks.shape_to_idx[obj["shape"]],
-                    codebooks.color_to_idx[obj["color"]],
-                    _nearest_fpe_idx(obj["x"], codebooks.n_pos_levels),
-                    _nearest_fpe_idx(obj["y"], codebooks.n_pos_levels),
-                    _nearest_fpe_idx(obj["size"], codebooks.n_size_levels),
-                ]
+                gt_idx = []
+                for name in codebooks.codebook_names():
+                    ftype = codebooks.factor_type(name)
+                    if ftype == "discrete":
+                        gt_idx.append(codebooks._value_to_idx[name][obj[name]])
+                    else:
+                        gt_idx.append(codebooks.nearest_fpe_idx(name, obj[name]))
                 gt_indices.append(gt_idx)
 
             # Greedy matching: for each predicted object, find best GT match
@@ -117,36 +120,98 @@ def evaluate_resonator(
     }
 
 
-def _nearest_fpe_idx(value: float, n_levels: int) -> int:
-    """Map a [0,1] value to the nearest FPE codebook index."""
-    return round(value * (n_levels - 1))
+def build_codebooks(args) -> SceneCodebooks:
+    """Create codebooks for the selected dataset."""
+    if args.dataset == "toy":
+        return SceneCodebooks.toy(
+            d=args.dim,
+            n_pos_levels=args.n_pos_levels,
+            n_size_levels=args.n_size_levels,
+        )
+    elif args.dataset == "clevr":
+        return SceneCodebooks.clevr(
+            d=args.dim,
+            n_pos_levels=args.n_pos_levels,
+            n_size_levels=args.n_size_levels,
+        )
+    elif args.dataset == "dsprites":
+        return SceneCodebooks.dsprites(
+            d=args.dim,
+            n_pos_levels=args.n_pos_levels,
+            n_size_levels=args.n_size_levels,
+        )
+    else:
+        raise ValueError(f"Unknown dataset: {args.dataset}")
+
+
+def build_datasets(args, codebooks: SceneCodebooks):
+    """Create train and val datasets for the selected dataset."""
+    if args.dataset == "toy":
+        from data.toy_scenes import ToySceneDataset
+        train_dataset = ToySceneDataset(
+            n_scenes=args.n_train,
+            codebooks=codebooks,
+            max_objects=args.max_objects,
+            seed=0,
+        )
+        val_dataset = ToySceneDataset(
+            n_scenes=args.n_val,
+            codebooks=codebooks,
+            max_objects=args.max_objects,
+            seed=9999,
+        )
+    elif args.dataset == "clevr":
+        from data.clevr_dataset import CLEVRDataset
+        if not args.data_dir:
+            raise ValueError("--data-dir is required for CLEVR dataset")
+        train_dataset = CLEVRDataset(
+            data_dir=args.data_dir,
+            codebooks=codebooks,
+            split="train",
+            max_objects=args.max_objects,
+            max_scenes=args.n_train,
+        )
+        val_dataset = CLEVRDataset(
+            data_dir=args.data_dir,
+            codebooks=codebooks,
+            split="val",
+            max_objects=args.max_objects,
+            max_scenes=args.n_val,
+        )
+    elif args.dataset == "dsprites":
+        from data.dsprites_dataset import MultiDSpritesDataset
+        data_dir = args.data_dir or "."
+        train_dataset = MultiDSpritesDataset(
+            data_dir=data_dir,
+            codebooks=codebooks,
+            n_scenes=args.n_train,
+            max_objects=args.max_objects,
+            seed=0,
+        )
+        val_dataset = MultiDSpritesDataset(
+            data_dir=data_dir,
+            codebooks=codebooks,
+            n_scenes=args.n_val,
+            max_objects=args.max_objects,
+            seed=9999,
+        )
+    else:
+        raise ValueError(f"Unknown dataset: {args.dataset}")
+
+    return train_dataset, val_dataset
 
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
+    print(f"Dataset: {args.dataset}")
 
     # Create codebooks
-    codebooks = SceneCodebooks(
-        d=args.dim,
-        n_pos_levels=args.n_pos_levels,
-        n_size_levels=args.n_size_levels,
-    )
+    codebooks = build_codebooks(args)
 
     # Create datasets
-    print("Generating training scenes...")
-    train_dataset = ToySceneDataset(
-        n_scenes=args.n_train,
-        codebooks=codebooks,
-        max_objects=args.max_objects,
-        seed=0,
-    )
-    val_dataset = ToySceneDataset(
-        n_scenes=args.n_val,
-        codebooks=codebooks,
-        max_objects=args.max_objects,
-        seed=9999,
-    )
+    print("Loading/generating scenes...")
+    train_dataset, val_dataset = build_datasets(args, codebooks)
 
     train_loader = DataLoader(
         train_dataset,
@@ -167,6 +232,7 @@ def train(args):
 
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
     print(f"FHRR dim: {args.dim}, Max objects: {args.max_objects}")
+    print(f"Factors: {codebooks.codebook_names()}")
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
     print()
 
@@ -219,6 +285,11 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default="toy",
+                        choices=["toy", "clevr", "dsprites"],
+                        help="Dataset to train on")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Data directory (required for CLEVR, optional for dSprites)")
     parser.add_argument("--dim", type=int, default=1024, help="FHRR dimension")
     parser.add_argument("--n-train", type=int, default=5000)
     parser.add_argument("--n-val", type=int, default=500)

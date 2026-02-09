@@ -122,32 +122,39 @@ class ResonatorNetwork:
         self,
         s: torch.Tensor,
         max_objects: int = 5,
+        sentinel_pairs: list[tuple[int, int]] | None = None,
+        # Deprecated: use sentinel_pairs instead
         none_shape_idx: int = 3,
         none_color_idx: int = 3,
     ) -> list[tuple[list[int], float]]:
         """Factorize a superposition of bindings via sequential peeling.
 
-        Stops when the resonator recovers a STOP object (shape or color
-        index equals the "none" sentinel), eliminating heuristic thresholds.
+        Stops when the resonator recovers a STOP object (any discrete factor
+        hits its sentinel index), eliminating heuristic thresholds.
 
         Args:
             s: scene FHRR vector (superposition of object bindings)
             max_objects: maximum objects to extract
-            none_shape_idx: codebook index for "none" shape (STOP sentinel)
-            none_color_idx: codebook index for "none" color (STOP sentinel)
+            sentinel_pairs: list of (factor_index, sentinel_codebook_index).
+                           If None, falls back to legacy hardcoded indices.
+            none_shape_idx: (deprecated) codebook index for "none" shape
+            none_color_idx: (deprecated) codebook index for "none" color
 
         Returns:
             List of (codebook_indices, confidence) per extracted object.
         """
+        # Build sentinel check: list of (factor_idx, sentinel_idx)
+        if sentinel_pairs is None:
+            sentinel_pairs = [(0, none_shape_idx), (1, none_color_idx)]
+
         residual = s.clone()
         results = []
 
         for obj_idx in range(max_objects):
             estimates, indices, conf = self.factorize_single(residual)
 
-            # STOP detection: if shape or color is "none", we've hit the
-            # sentinel object — stop peeling without including it
-            if indices[0] == none_shape_idx or indices[1] == none_color_idx:
+            # STOP detection: if any discrete factor hits its sentinel
+            if any(indices[fi] == si for fi, si in sentinel_pairs):
                 break
 
             results.append((indices, conf))

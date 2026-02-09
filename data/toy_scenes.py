@@ -15,14 +15,14 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image, ImageDraw
 
-from vsa.codebooks import SHAPES, COLORS, SceneCodebooks
+from vsa.codebooks import TOY_SHAPES, TOY_COLORS, SHAPES, COLORS, SceneCodebooks
 
 
 IMG_SIZE = 64
 
 # Exclude "none" sentinel from random scene generation
-REAL_SHAPES = [s for s in SHAPES if s != "none"]
-REAL_COLORS = [c for c in COLORS if c != "none"]
+REAL_SHAPES = TOY_SHAPES
+REAL_COLORS = TOY_COLORS
 
 COLOR_RGB = {
     "red": (220, 50, 50),
