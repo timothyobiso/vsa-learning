@@ -9,14 +9,11 @@ Properties per object:
   - x, y: position in [0, 1] → FPE
   - scale: size in [0, 1] → FPE
 
-Download dSprites:
-  https://github.com/google-deepmind/dsprites-dataset/raw/master/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz
-
-Place the .npz file at <data_dir>/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz
-or pass the path directly.
+The .npz file is auto-downloaded on first use.
 """
 
 import random
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +21,9 @@ import torch
 from torch.utils.data import Dataset
 
 from vsa.codebooks import DSPRITES_SHAPES, SceneCodebooks
+
+DSPRITES_URL = "https://github.com/google-deepmind/dsprites-dataset/raw/master/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz"
+DSPRITES_FILENAME = "dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz"
 
 
 IMG_SIZE = 64
@@ -37,13 +37,24 @@ _DSPRITES_SHAPE_NAMES = {0: "square", 1: "ellipse", 2: "heart"}
 # latents_values ranges: scale=[0.5..1.0], orientation=[0..2pi], posX=[0..1], posY=[0..1]
 
 
+def download_dsprites(data_dir: str) -> Path:
+    """Download the dSprites .npz if not already present. Returns path to file."""
+    data_path = Path(data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+    npz_file = data_path / DSPRITES_FILENAME
+    if not npz_file.exists():
+        print(f"Downloading dSprites to {npz_file} ...")
+        urllib.request.urlretrieve(DSPRITES_URL, npz_file)
+        print("Done.")
+    return npz_file
+
+
 def load_dsprites(data_dir: str) -> dict:
-    """Load the base dSprites .npz file.
+    """Load the base dSprites .npz file, downloading if needed.
 
     Returns dict with 'imgs' (737280, 64, 64) uint8 and 'latents_values' (737280, 6).
     """
-    data_path = Path(data_dir)
-    npz_file = data_path / "dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz"
+    npz_file = download_dsprites(data_dir)
     data = np.load(npz_file, allow_pickle=True)
     return {
         "imgs": data["imgs"],  # (N, 64, 64) binary

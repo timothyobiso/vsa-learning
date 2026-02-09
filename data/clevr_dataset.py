@@ -1,6 +1,7 @@
 """CLEVR dataset loader.
 
 Loads CLEVR v1.0 images and scene annotations, encodes objects as FHRR targets.
+Auto-downloads CLEVR v1.0 (~18GB) on first use if not present.
 
 Properties per object:
   - shape: "cube" / "sphere" / "cylinder" → discrete
@@ -9,11 +10,7 @@ Properties per object:
   - x, y, z: 3D position normalized to [0,1] → FPE
   - size: "small" / "large" mapped to continuous [0,1] → FPE
 
-Download CLEVR v1.0:
-  https://cs.stanford.edu/people/jcjohns/clevr/
-  Extract so that data_dir contains: images/, scenes/
-
-Expected directory structure:
+Expected directory structure (created automatically by download):
   <data_dir>/
     images/
       train/  CLEVR_train_000000.png ...
@@ -24,6 +21,9 @@ Expected directory structure:
 """
 
 import json
+import subprocess
+import shutil
+import zipfile
 from pathlib import Path
 
 import torch
@@ -32,6 +32,8 @@ from PIL import Image
 from torchvision import transforms
 
 from vsa.codebooks import SceneCodebooks
+
+CLEVR_URL = "https://dl.fbaipublicfiles.com/clevr/CLEVR_v1.0.zip"
 
 
 IMG_SIZE = 64
@@ -48,6 +50,49 @@ _transform = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor(),  # → (3, H, W) float [0, 1]
 ])
+
+
+def download_clevr(data_dir: str) -> Path:
+    """Download and extract CLEVR v1.0 if not already present.
+
+    Downloads ~18GB zip and extracts to data_dir so that
+    data_dir/images/ and data_dir/scenes/ exist.
+    """
+    data_path = Path(data_dir)
+    scenes_dir = data_path / "scenes"
+    if scenes_dir.exists():
+        return data_path
+
+    data_path.mkdir(parents=True, exist_ok=True)
+    zip_path = data_path / "CLEVR_v1.0.zip"
+
+    if not zip_path.exists():
+        print(f"Downloading CLEVR v1.0 (~18GB) to {zip_path} ...")
+        # Use wget/curl for large file with progress
+        if shutil.which("wget"):
+            subprocess.run(["wget", "-O", str(zip_path), CLEVR_URL], check=True)
+        elif shutil.which("curl"):
+            subprocess.run(["curl", "-L", "-o", str(zip_path), CLEVR_URL], check=True)
+        else:
+            import urllib.request
+            urllib.request.urlretrieve(CLEVR_URL, zip_path)
+        print("Download complete.")
+
+    print(f"Extracting CLEVR to {data_path} ...")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(data_path)
+
+    # The zip extracts to CLEVR_v1.0/ — move contents up to data_dir
+    extracted = data_path / "CLEVR_v1.0"
+    if extracted.exists():
+        for item in extracted.iterdir():
+            dest = data_path / item.name
+            if not dest.exists():
+                item.rename(dest)
+        extracted.rmdir()
+
+    print("Extraction complete.")
+    return data_path
 
 
 def _normalize(val: float, lo: float, hi: float) -> float:
@@ -94,7 +139,7 @@ class CLEVRDataset(Dataset):
         max_scenes: int | None = None,
     ):
         self.codebooks = codebooks
-        self.data_dir = Path(data_dir)
+        self.data_dir = download_clevr(data_dir)
         self.split = split
 
         # Load scene annotations
