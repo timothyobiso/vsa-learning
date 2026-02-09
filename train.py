@@ -221,8 +221,12 @@ def train(args):
     )
 
     # Model
-    model = SceneEncoder(d=args.dim).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    model = SceneEncoder(
+        d=args.dim, backbone=args.backbone, freeze_backbone=args.freeze_backbone,
+    ).to(device)
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr,
+    )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs
     )
@@ -230,7 +234,9 @@ def train(args):
     # Resonator for evaluation
     resonator = ResonatorNetwork(codebooks.all_codebooks(), max_iters=200)
 
-    print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"Backbone: {args.backbone} | Params: {trainable:,} trainable / {total:,} total")
     print(f"FHRR dim: {args.dim}, Max objects: {args.max_objects}")
     print(f"Factors: {codebooks.codebook_names()}")
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
@@ -290,6 +296,11 @@ if __name__ == "__main__":
                         help="Dataset to train on")
     parser.add_argument("--data-dir", type=str, default=None,
                         help="Data directory (required for CLEVR, optional for dSprites)")
+    parser.add_argument("--backbone", type=str, default="simple",
+                        choices=["simple", "resnet"],
+                        help="CNN backbone: simple (lightweight) or resnet (pretrained ResNet-34)")
+    parser.add_argument("--freeze-backbone", action="store_true",
+                        help="Freeze backbone weights, only train MLP head")
     parser.add_argument("--dim", type=int, default=1024, help="FHRR dimension")
     parser.add_argument("--n-train", type=int, default=5000)
     parser.add_argument("--n-val", type=int, default=500)
