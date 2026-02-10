@@ -12,6 +12,8 @@ For scenes with multiple objects (superposition), we use sequential peeling:
     3. Repeat on the residual
 """
 
+from __future__ import annotations
+
 import torch
 from .fhrr import bind, unbind, similarity, normalize, bundle
 

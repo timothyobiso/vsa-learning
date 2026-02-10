@@ -235,3 +235,35 @@ class SceneCodebooks:
                     raise ValueError(f"Factor '{factor_name}' is FPE, not discrete")
                 return list(fc.values)
         raise KeyError(f"Unknown factor: {factor_name}")
+
+    def object_to_indices(self, obj: dict) -> list[int]:
+        """Convert an object property dict to a list of codebook indices.
+
+        Args:
+            obj: dict with keys matching factor names.
+                 Discrete factors: str category name.
+                 FPE factors: float in [0, 1].
+
+        Returns:
+            List of K ints, one codebook index per factor.
+        """
+        indices = []
+        for fc in self.factors:
+            if fc.type == "discrete":
+                indices.append(self._value_to_idx[fc.name][obj[fc.name]])
+            else:
+                indices.append(self.nearest_fpe_idx(fc.name, obj[fc.name]))
+        return indices
+
+    def stop_indices(self) -> list[int]:
+        """Return the codebook indices for the STOP object.
+
+        Discrete factors use the sentinel ("none") index; FPE factors use index 0.
+        """
+        indices = []
+        for fc in self.factors:
+            if fc.type == "discrete":
+                indices.append(len(fc.values))  # "none" sentinel
+            else:
+                indices.append(0)  # FPE index 0
+        return indices
