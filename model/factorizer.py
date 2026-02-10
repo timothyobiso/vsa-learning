@@ -1,19 +1,20 @@
 """Amortized Factorizer: learned replacement for the resonator.
 
-Takes an FHRR vector, computes similarities to each codebook,
-and uses a cross-factor MLP to predict per-factor codebook indices
-in a single forward pass. Includes a STOP head for peeling termination.
+Takes an FHRR vector, computes similarities to each codebook via
+iterative soft unbinding (differentiable resonator), then uses a
+cross-factor MLP to predict per-factor codebook indices.
+Includes a STOP head for peeling termination.
 """
 
 import torch
 import torch.nn as nn
 
 from vsa.codebooks import SceneCodebooks
-from vsa.fhrr import similarity, bind
+from vsa.fhrr import similarity, bind, unbind
 
 
 class AmortizedFactorizer(nn.Module):
-    """MLP that maps FHRR codebook similarities to per-factor logits."""
+    """Differentiable resonator + MLP for FHRR factorization."""
 
     def __init__(
         self,
@@ -21,6 +22,7 @@ class AmortizedFactorizer(nn.Module):
         hidden_dim: int = 256,
         n_hidden_layers: int = 2,
         dropout: float = 0.1,
+        n_unbind_iters: int = 3,
     ):
         super().__init__()
         self.codebooks = codebooks
@@ -30,11 +32,17 @@ class AmortizedFactorizer(nn.Module):
         self.n_factors = len(cb_list)
         self.codebook_sizes = [cb.shape[0] for cb in cb_list]
         self.total_sim_dim = sum(self.codebook_sizes)
+        self.n_unbind_iters = n_unbind_iters
 
         for i, cb in enumerate(cb_list):
             # Store real and imag parts since buffers must be real
             self.register_buffer(f"cb_real_{i}", cb.real.clone())
             self.register_buffer(f"cb_imag_{i}", cb.imag.clone())
+
+        # Learnable temperature for softmax sharpening during unbinding.
+        # Raw similarities of a K-factor binding are ~1/sqrt(d); scaling by
+        # sqrt(d) brings them to O(1) so softmax produces non-uniform weights.
+        self.sim_scale = nn.Parameter(torch.tensor(float(codebooks.d ** 0.5)))
 
         # Cross-factor MLP
         layers = []
@@ -64,19 +72,45 @@ class AmortizedFactorizer(nn.Module):
         return torch.complex(real, imag)
 
     def compute_similarities(self, z: torch.Tensor) -> torch.Tensor:
-        """Compute similarity of z against each codebook.
+        """Compute per-factor similarities via iterative soft unbinding.
+
+        Raw similarity of a multi-factor binding z against individual codebook
+        entries has SNR ~1/sqrt(d) — too low for direct classification.  We
+        iteratively: (1) form soft factor estimates from current similarities,
+        (2) unbind all OTHER estimates from z, (3) recompute similarity.  This
+        is a differentiable resonator that amplifies per-factor signal.
 
         Args:
             z: (B, d) complex FHRR vectors
 
         Returns:
-            (B, total_sim_dim) real-valued similarities
+            (B, total_sim_dim) real-valued similarities after unbinding
         """
+        # Initial raw similarities
         sims = []
         for i in range(self.n_factors):
             cb = self._get_codebook(i)
-            # similarity: (B, d) vs (Nk, d) → (B, Nk)
-            sims.append(similarity(z, cb))
+            sims.append(similarity(z, cb))  # (B, Nk)
+
+        for _ in range(self.n_unbind_iters):
+            # Soft factor estimates: softmax-weighted sum of codebook entries
+            soft_estimates = []
+            for i in range(self.n_factors):
+                cb = self._get_codebook(i)  # (Nk, d) complex
+                weights = torch.softmax(sims[i] * self.sim_scale, dim=-1)  # (B, Nk)
+                # (B, Nk, 1) * (Nk, d) → (B, Nk, d) → sum → (B, d)
+                estimate = (weights.unsqueeze(-1) * cb.unsqueeze(0)).sum(dim=1)
+                soft_estimates.append(estimate)
+
+            # For each factor, unbind all OTHER soft estimates, recompute sim
+            new_sims = []
+            for i in range(self.n_factors):
+                cb = self._get_codebook(i)
+                others = [soft_estimates[j] for j in range(self.n_factors) if j != i]
+                unbound = unbind(z, *others)
+                new_sims.append(similarity(unbound, cb))
+            sims = new_sims
+
         return torch.cat(sims, dim=-1)
 
     def forward(

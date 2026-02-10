@@ -440,6 +440,7 @@ def train_factorizer(args):
         hidden_dim=args.factorizer_hidden,
         n_hidden_layers=args.factorizer_layers,
         dropout=args.factorizer_dropout,
+        n_unbind_iters=args.factorizer_unbind_iters,
     ).to(device)
 
     optimizer = torch.optim.Adam(factorizer.parameters(), lr=args.factorizer_lr)
@@ -556,6 +557,7 @@ def train_joint(args):
         hidden_dim=args.factorizer_hidden,
         n_hidden_layers=args.factorizer_layers,
         dropout=args.factorizer_dropout,
+        n_unbind_iters=args.factorizer_unbind_iters,
     ).to(device)
     if args.factorizer_checkpoint:
         factorizer.load_state_dict(
@@ -690,6 +692,8 @@ if __name__ == "__main__":
                         help="Factorizer dropout rate")
     parser.add_argument("--factorizer-lr", type=float, default=1e-3,
                         help="Factorizer learning rate")
+    parser.add_argument("--factorizer-unbind-iters", type=int, default=3,
+                        help="Soft unbinding iterations in factorizer (differentiable resonator)")
     parser.add_argument("--factorizer-checkpoint", type=str, default=None,
                         help="Path to pretrained factorizer checkpoint (for joint mode)")
 
