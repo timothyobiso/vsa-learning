@@ -447,10 +447,8 @@ def train_factorizer(args):
         optimizer, T_max=args.epochs
     )
 
-    # Precompute stop vector and its targets
+    # Precompute stop vector
     stop_vec = codebooks.stop_vector.to(device)
-    stop_indices = codebooks.stop_indices()
-    n_factors = len(codebooks.factors)
 
     trainable = sum(p.numel() for p in factorizer.parameters())
     print(f"Factorizer params: {trainable:,}")
@@ -483,18 +481,12 @@ def train_factorizer(args):
                 factor_logits, stop_logit, factor_targets, stop_targets
             )
 
-            # STOP training: also train on the stop vector
+            # STOP training: only train the stop head (BCE), not factor MLP
             B = images.shape[0]
             stop_batch = stop_vec.unsqueeze(0).expand(B, -1)
-            stop_factor_logits, stop_stop_logit = factorizer(stop_batch)
-            stop_factor_targets = [
-                torch.full((B,), idx, dtype=torch.long, device=device)
-                for idx in stop_indices
-            ]
-            stop_stop_targets = torch.ones(B, device=device)
-            stop_loss = factorizer_loss(
-                stop_factor_logits, stop_stop_logit,
-                stop_factor_targets, stop_stop_targets,
+            _, stop_stop_logit = factorizer(stop_batch)
+            stop_loss = nn.BCEWithLogitsLoss()(
+                stop_stop_logit.squeeze(-1), torch.ones(B, device=device)
             )
 
             total_batch_loss = loss + stop_loss
@@ -580,7 +572,6 @@ def train_joint(args):
     )
 
     stop_vec = codebooks.stop_vector.to(device)
-    stop_indices = codebooks.stop_indices()
 
     enc_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     fac_params = sum(p.numel() for p in factorizer.parameters())
@@ -607,8 +598,9 @@ def train_joint(args):
             # Cosine loss on encoder
             cos_loss = fhrr_cosine_loss(pred, targets)
 
-            # Factorizer loss
-            factor_logits, stop_logit = factorizer(pred)
+            # Factorizer loss (detach encoder output — cosine loss supervises
+            # encoder, factorizer learns to decode without destabilizing it)
+            factor_logits, stop_logit = factorizer(pred.detach())
             factor_targets, stop_targets = compute_factor_targets(
                 scenes, codebooks, device
             )
@@ -616,18 +608,12 @@ def train_joint(args):
                 factor_logits, stop_logit, factor_targets, stop_targets
             )
 
-            # STOP training
+            # STOP training: only train the stop head (BCE), not factor MLP
             B = images.shape[0]
             stop_batch = stop_vec.unsqueeze(0).expand(B, -1)
-            stop_factor_logits, stop_stop_logit = factorizer(stop_batch)
-            stop_factor_targets = [
-                torch.full((B,), idx, dtype=torch.long, device=device)
-                for idx in stop_indices
-            ]
-            stop_stop_targets = torch.ones(B, device=device)
-            stop_loss = factorizer_loss(
-                stop_factor_logits, stop_stop_logit,
-                stop_factor_targets, stop_stop_targets,
+            _, stop_stop_logit = factorizer(stop_batch)
+            stop_loss = nn.BCEWithLogitsLoss()(
+                stop_stop_logit.squeeze(-1), torch.ones(B, device=device)
             )
 
             loss = cos_loss + fac_loss + stop_loss
